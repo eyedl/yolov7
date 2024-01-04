@@ -31,8 +31,9 @@ class RegisterNMS(object):
         ONNX graph to determine tensor shapes.
         """
         for _ in range(3):
+            LOGGER.info(f"Next loop {_}")
             count_before = len(self.graph.nodes)
-
+            LOGGER.info("Cleaning up graph")
             self.graph.cleanup().toposort()
             try:
                 for node in self.graph.nodes:
@@ -53,9 +54,11 @@ class RegisterNMS(object):
                 raise
 
             count_after = len(self.graph.nodes)
+            LOGGER.info(f"Infered NMS plugin")
             if count_before == count_after:
                 # No new folding occurred in this iteration, so we can stop for now.
                 break
+
 
     def save(self, output_path):
         """
@@ -64,8 +67,11 @@ class RegisterNMS(object):
             output_path: Path pointing to the location where to write
                 out the updated ONNX model.
         """
+        LOGGER.info("Starting to cleanup graph")
         self.graph.cleanup().toposort()
+        LOGGER.info("Exporting to onnx")
         model = gs.export_onnx(self.graph)
+        LOGGER.info("Savind model")
         onnx.save(model, output_path)
         LOGGER.info(f"Saved ONNX model to {output_path}")
 
@@ -90,6 +96,7 @@ class RegisterNMS(object):
 
         self.infer()
         # Find the concat node at the end of the network
+        LOGGER.info("Gettign inputs")
         op_inputs = self.graph.outputs
         op = "EfficientNMS_TRT"
         attrs = {
@@ -101,7 +108,7 @@ class RegisterNMS(object):
             "score_activation": False,
             "box_coding": 0,
         }
-
+        LOGGER.info("Determine precision")
         if self.precision == "fp32":
             dtype_output = np.float32
         elif self.precision == "fp16":
@@ -110,6 +117,7 @@ class RegisterNMS(object):
             raise NotImplementedError(f"Currently not supports precision: {self.precision}")
 
         # NMS Outputs
+        LOGGER.info("Getting output detections, boxes, scores and labels")
         output_num_detections = gs.Variable(
             name="num_dets",
             dtype=np.int32,
@@ -135,11 +143,12 @@ class RegisterNMS(object):
 
         # Create the NMS Plugin node with the selected inputs. The outputs of the node will also
         # become the final outputs of the graph.
+        LOGGER.info("Creating graph layer")
         self.graph.layer(op=op, name="batched_nms", inputs=op_inputs, outputs=op_outputs, attrs=attrs)
         LOGGER.info(f"Created NMS plugin '{op}' with attributes: {attrs}")
-
+        LOGGER.info("Adding outputs")
         self.graph.outputs = op_outputs
-
+        LOGGER.info("Second infer step")
         self.infer()
 
     def save(self, output_path):
