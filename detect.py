@@ -65,9 +65,16 @@ def detect(save_img=False):
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     old_img_w = old_img_h = imgsz
     old_img_b = 1
-
+    iix = True
     t0 = time.time()
+    total_detections = 0
     for path, img, im0s, vid_cap in dataset:
+        if iix:
+            cap_img = img.transpose(1, 2, 0)
+            cap_img = cv2.cvtColor(cap_img, cv2.COLOR_RGB2BGR)
+            print("image shape: ", cap_img.shape)
+            cv2.imwrite('videos/test_detect.png', cap_img)
+            iix = False
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -84,6 +91,7 @@ def detect(save_img=False):
 
         # Inference
         t1 = time_synchronized()
+
         with torch.no_grad():   # Calculating gradients would cause a GPU memory leak
             pred = model(img, augment=opt.augment)[0]
         t2 = time_synchronized()
@@ -107,6 +115,7 @@ def detect(save_img=False):
             save_path = str(save_dir / p.name)  # img.jpg
             txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+            total_detections += len(det)
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
@@ -160,7 +169,7 @@ def detect(save_img=False):
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         #print(f"Results saved to {save_dir}{s}")
 
-    print(f'Done. ({time.time() - t0:.3f}s)')
+    print(f'Done. ({time.time() - t0:.3f}s). Total detections: {total_detections}')
 
 
 if __name__ == '__main__':

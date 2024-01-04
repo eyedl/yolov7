@@ -38,7 +38,8 @@ from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 logger = logging.getLogger(__name__)
 
 
-def train(hyp, opt, device, tb_writer=None):
+def train(hyp, opt, device, tb_writer=None, conf_thres: float = 0.001, iou_thres: float = 0.60, overlap: float = 0.5,
+          max_overlap: float = 0.95):
     logger.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
     save_dir, epochs, batch_size, total_batch_size, weights, rank, freeze = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.global_rank, opt.freeze
@@ -415,6 +416,10 @@ def train(hyp, opt, device, tb_writer=None):
                 results, maps, times = test.test(data_dict,
                                                  batch_size=batch_size * 2,
                                                  imgsz=imgsz_test,
+                                                 conf_thres=conf_thres,
+                                                 iou_thres=iou_thres,
+                                                 overlap=overlap,
+                                                 max_overlap=max_overlap,
                                                  model=ema.ema,
                                                  single_cls=opt.single_cls,
                                                  dataloader=testloader,
@@ -495,8 +500,10 @@ def train(hyp, opt, device, tb_writer=None):
                 results, _, _ = test.test(opt.data,
                                           batch_size=batch_size * 2,
                                           imgsz=imgsz_test,
-                                          conf_thres=0.001,
-                                          iou_thres=0.7,
+                                          conf_thres=conf_thres,
+                                          iou_thres=iou_thres,
+                                          overlap=overlap,
+                                          max_overlap=max_overlap,
                                           model=attempt_load(m, device).half(),
                                           single_cls=opt.single_cls,
                                           dataloader=testloader,
@@ -561,6 +568,13 @@ if __name__ == '__main__':
     parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
+    parser.add_argument('--conf_thres', type=float, help='Confidence threshold for validation and mAP', default=0.01)
+    parser.add_argument('--iou_thres', type=float, help='NMS for validation and mAP', default=0.6)
+    parser.add_argument('--overlap', type=float, help='Minimum needed overlap (iou threshold) for validation and mAP',
+                        default=0.5)
+    parser.add_argument('--max_overlap', type=float,
+                        help='Maximum needed overlap (iou threshold) for validation and mAP; used for mAP=0.x-o.y',
+                        default=0.95)
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     opt = parser.parse_args()
 
@@ -613,7 +627,8 @@ if __name__ == '__main__':
             prefix = colorstr('tensorboard: ')
             logger.info(f"{prefix}Start with 'tensorboard --logdir {opt.project}', view at http://localhost:6006/")
             tb_writer = SummaryWriter(opt.save_dir)  # Tensorboard
-        train(hyp, opt, device, tb_writer)
+        train(hyp, opt, device, tb_writer, conf_thres=opt.conf_thres, iou_thres=opt.iou_thres, overlap=opt.overlap,
+              max_overlap=opt.max_overlap)
 
     # Evolve hyperparameters (optional)
     else:
@@ -626,7 +641,7 @@ if __name__ == '__main__':
                 'warmup_momentum': (1, 0.0, 0.95),  # warmup initial momentum
                 'warmup_bias_lr': (1, 0.0, 0.2),  # warmup initial bias lr
                 'box': (1, 0.02, 0.2),  # box loss gain
-                'cls': (1, 0.2, 4.0),  # cls loss gain
+                'cls': (0, 0.2, 4.0),  # cls loss gain                                                  NO NEED
                 'cls_pw': (1, 0.5, 2.0),  # cls BCELoss positive_weight
                 'obj': (1, 0.2, 4.0),  # obj loss gain (scale with pixels)
                 'obj_pw': (1, 0.5, 2.0),  # obj BCELoss positive_weight
@@ -637,7 +652,7 @@ if __name__ == '__main__':
                 'hsv_h': (1, 0.0, 0.1),  # image HSV-Hue augmentation (fraction)
                 'hsv_s': (1, 0.0, 0.9),  # image HSV-Saturation augmentation (fraction)
                 'hsv_v': (1, 0.0, 0.9),  # image HSV-Value augmentation (fraction)
-                'degrees': (1, 0.0, 45.0),  # image rotation (+/- deg)
+                'degrees': (1, 0.0, 45.0),  # image rotation (+/- deg)                                  Check runtime
                 'translate': (1, 0.0, 0.9),  # image translation (+/- fraction)
                 'scale': (1, 0.0, 0.9),  # image scale (+/- gain)
                 'shear': (1, 0.0, 10.0),  # image shear (+/- deg)
@@ -647,8 +662,9 @@ if __name__ == '__main__':
                 'mosaic': (1, 0.0, 1.0),  # image mixup (probability)
                 'mixup': (1, 0.0, 1.0),   # image mixup (probability)
                 'copy_paste': (1, 0.0, 1.0),  # segment copy-paste (probability)
-                'paste_in': (1, 0.0, 1.0)}    # segment copy-paste (probability)
-        
+                'paste_in': (1, 0.0, 1.0),    # segment copy-paste (probability)
+                'loss_ota': (1, 0, 1)} # adding loss_ota in the mutation compute, evolve will fail without this
+
         with open(opt.hyp, errors='ignore') as f:
             hyp = yaml.safe_load(f)  # load hyps dict
             if 'anchors' not in hyp:  # anchors commented in hyp.yaml
@@ -668,7 +684,7 @@ if __name__ == '__main__':
                 x = np.loadtxt('evolve.txt', ndmin=2)
                 n = min(5, len(x))  # number of previous results to consider
                 x = x[np.argsort(-fitness(x))][:n]  # top n mutations
-                w = fitness(x) - fitness(x).min()  # weights
+                w = fitness(x) - fitness(x).min() + 1E-6  # weights
                 if parent == 'single' or len(x) == 1:
                     # x = x[random.randint(0, n - 1)]  # random selection
                     x = x[random.choices(range(n), weights=w)[0]]  # weighted selection
@@ -694,7 +710,8 @@ if __name__ == '__main__':
                 hyp[k] = round(hyp[k], 5)  # significant digits
 
             # Train mutation
-            results = train(hyp.copy(), opt, device)
+            results = train(hyp.copy(), opt, device, conf_thres=opt.conf_thres, iou_thres=opt.iou_thres,
+                            overlap=opt.overlap, max_overlap=opt.max_overlap)
 
             # Write mutation results
             print_mutation(hyp.copy(), results, yaml_file, opt.bucket)
